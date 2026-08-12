@@ -1,0 +1,167 @@
+#include <Audio.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SerialFlash.h>
+
+// GUItool: begin automatically generated code
+AudioSynthWaveform       waveform1;      
+AudioSynthWaveform       waveform2;      
+AudioMixer4              mixer1;         
+AudioFilterStateVariable filter1;        
+AudioEffectEnvelope      envelope1;      
+AudioOutputI2S           i2s2;           
+
+AudioConnection          patchCord1(waveform1, 0, mixer1, 0);
+AudioConnection          patchCord2(waveform2, 0, mixer1, 1);
+AudioConnection          patchCord3(mixer1, 0, filter1, 0);
+AudioConnection          patchCord4(filter1, 0, envelope1, 0);
+AudioConnection          patchCord5(envelope1, 0, i2s2, 0);
+AudioConnection          patchCord6(envelope1, 0, i2s2, 1);
+AudioControlSGTL5000     sgtl5000_1;     
+// GUItool: end automatically generated code
+
+// Pin Assignments
+const int KNOB_PITCH = A10;   
+const int KNOB_CUTOFF = A11;  
+const int KNOB_VOL = A12;     
+
+const int BTN_1 = 30;         // Button 1: SFX Type 1
+const int BTN_2 = 31;         // Button 2: SFX Type 2
+const int BTN_3 = 32;         // Button 3: SFX Type 3
+
+const int SW_1 = 28;          // Switch 1: Pitch Up
+const int SW_2 = 29;          // Switch 2: Pitch Down
+
+const int PIEZO_PIN = A14;
+
+const int PIEZO_THRESHOLD_LOW = 170; 
+unsigned long lastTriggerTime = 0;
+const int DEBOUNCE_DELAY = 100; 
+const unsigned long NOTE_DURATION = 600; 
+bool noteIsActive = false;
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial && millis() < 3000);
+  Serial.println("--- Fixed SFX Synth Started ---");
+
+  AudioMemory(20);
+  sgtl5000_1.enable();
+  sgtl5000_1.volume(0.6);
+
+  // Unifying all buttons to standard INPUT_PULLUP (Pressing connects to GND -> reads LOW)
+  pinMode(BTN_1, INPUT_PULLUP);
+  pinMode(BTN_2, INPUT_PULLUP);
+  pinMode(BTN_3, INPUT_PULLUP);
+  pinMode(SW_1, INPUT_PULLUP);
+  pinMode(SW_2, INPUT_PULLUP);
+
+  waveform1.begin(WAVEFORM_SINE);     
+  waveform1.amplitude(0.0);
+  
+  waveform2.begin(WAVEFORM_SAWTOOTH); 
+  waveform2.amplitude(0.0);
+
+  mixer1.gain(0, 0.7); 
+  mixer1.gain(1, 0.3); 
+
+  envelope1.attack(5);      
+  envelope1.hold(20);       
+  envelope1.decay(350);     
+  envelope1.sustain(0.0);   
+  envelope1.release(100);   
+
+  filter1.resonance(2.5);   
+}
+
+void loop() {
+  float knobPitchVal = (float)analogRead(KNOB_PITCH) / 1023.0;
+  float knobCutoffVal = (float)analogRead(KNOB_CUTOFF) / 1023.0;
+  float knobVolVal = (float)analogRead(KNOB_VOL) / 1023.0;
+
+  sgtl5000_1.volume(knobVolVal);
+
+  float cutoffFreq = 200.0 + (knobCutoffVal * 5000.0);
+  filter1.frequency(cutoffFreq);
+
+  // --- SWITCH LOGIC (Pitch / Octave Shifter) ---
+  // Switches use LOW when toggled on
+  bool pitchUp = (digitalRead(SW_1) == LOW);
+  bool pitchDown = (digitalRead(SW_2) == LOW);
+
+  float switchPitchMultiplier = 1.0;
+  if (pitchUp) switchPitchMultiplier = 2.0;       // Pitch Up an octave
+  if (pitchDown) switchPitchMultiplier = 0.5;     // Pitch Down an octave
+
+  // --- BUTTON LOGIC (Checked continuously) ---
+  bool btn1Pressed = (digitalRead(BTN_1) == LOW); 
+  bool btn2Pressed = (digitalRead(BTN_2) == LOW);  
+  bool btn3Pressed = (digitalRead(BTN_3) == LOW); 
+
+  // --- REVERSED PIEZO TRIGGER CHECK ---
+  int rawPiezo = analogRead(PIEZO_PIN);
+
+  if (rawPiezo < PIEZO_THRESHOLD_LOW && (millis() - lastTriggerTime > DEBOUNCE_DELAY)) {
+    int dropAmount = 204 - rawPiezo;
+    Serial.print("Triggered! Drop: "); Serial.println(dropAmount);
+    
+    float baseFreq = 100.0 + (knobPitchVal * 800.0);
+    
+    if (btn1Pressed) {
+      // Button 1: Laser Zap FX
+      Serial.println("SFX: Laser Zap");
+      waveform1.begin(WAVEFORM_SAWTOOTH);
+      waveform2.begin(WAVEFORM_TRIANGLE);
+      baseFreq = (float)(random(300, 900)) * switchPitchMultiplier;
+      waveform1.frequency(baseFreq);
+      waveform2.frequency(baseFreq * 0.5);
+      filter1.resonance(4.0);
+    } 
+    else if (btn2Pressed) {
+      // Button 2: Bubble Bloop FX
+      Serial.println("SFX: Bubble Bloop");
+      waveform1.begin(WAVEFORM_SINE);
+      waveform2.begin(WAVEFORM_TRIANGLE);
+      baseFreq = (float)(random(80, 400)) * switchPitchMultiplier;
+      waveform1.frequency(baseFreq);
+      waveform2.frequency(baseFreq * 1.414); 
+      filter1.resonance(3.0);
+    } 
+    else if (btn3Pressed) {
+      // Button 3: Robotic Chirp FX
+      Serial.println("SFX: Robotic Chirp");
+      waveform1.begin(WAVEFORM_SQUARE);
+      waveform2.begin(WAVEFORM_SAWTOOTH);
+      baseFreq = (float)(random(500, 1500)) * switchPitchMultiplier;
+      waveform1.frequency(baseFreq);
+      waveform2.frequency(baseFreq * 1.25);
+      filter1.resonance(5.0);
+    } 
+    else {
+      // Default Random Blip (No button held)
+      Serial.println("SFX: Random Blip");
+      waveform1.begin(WAVEFORM_SINE);
+      waveform2.begin(WAVEFORM_SAWTOOTH);
+      baseFreq = (float)(random(150, 600)) * switchPitchMultiplier;
+      waveform1.frequency(baseFreq);
+      waveform2.frequency(baseFreq * 2.0);
+      filter1.resonance(2.0);
+    }
+
+    float hitAmplitude = constrain((float)dropAmount / 35.0, 0.3, 0.9);
+    waveform1.amplitude(hitAmplitude);
+    waveform2.amplitude(hitAmplitude * 0.5); 
+
+    envelope1.noteOn();
+    noteIsActive = true;
+    lastTriggerTime = millis();
+  }
+
+  if (noteIsActive && (millis() - lastTriggerTime > NOTE_DURATION)) {
+    envelope1.noteOff();
+    waveform1.amplitude(0.0);
+    waveform2.amplitude(0.0);
+    noteIsActive = false;
+  }
+}
